@@ -1,0 +1,159 @@
+/* DealFinder demo app.js
+   - Așteaptă un JSON cu oferte (vezi listings-sample.json)
+   - Calculează scor investiție pe baza pricePerSqm vs cityMedian
+   - Rescrie descrierea cu funcție locală (simplificată) + exemplu integrare GPT
+*/
+
+const cityMedians = {
+  // valori inițiale folosite pentru calculul scorului (pot fi actualizate din feed)
+  "Cluj-Napoca": 3000,
+  "Bucuresti": 1886,
+  "Brasov": 2161,
+  "Timisoara": 1700,
+  "Sibiu": 1500,
+  "Iasi": 1400,
+  "Constanta": 1600,
+  "Oradea": 1550
+};
+
+const listingsEl = document.getElementById('listings');
+const cityFilter = document.getElementById('cityFilter');
+const maxPrice = document.getElementById('maxPrice');
+const invType = document.getElementById('invType');
+const applyBtn = document.getElementById('applyBtn');
+const resetBtn = document.getElementById('resetBtn');
+const addSample = document.getElementById('add-sample');
+
+let allListings = [];
+
+/* --- Utility: scor investiție (0..100)
+   - dacă preț/mp < 0.8 * medie => foarte bun (score crescut)
+   - dacă preț/mp >> medie => low score
+   - boost pentru proximitate (ex: near_university, tourist)
+*/
+function computeScore(listing){
+  const cityMed = cityMedians[listing.city] || 1700;
+  const ratio = listing.pricePerSqm / cityMed; // 1.0 = egal cu medie
+  let base = Math.max(0, 100 - Math.round((ratio - 0.8) * 80)); // penalizează scumpirea
+  // boost pe tip investiție
+  if(listing.tags.includes('near_university')) base += 10;
+  if(listing.tags.includes('tourist_area')) base += 8;
+  if(listing.tags.includes('needs_reno') && listing.type === 'flip') base += 7;
+  base = Math.min(100, base);
+  return base;
+}
+
+/* --- Rescriere descriere (variantă locală simplificată)
+   Păstrează ideea propozițiilor principale; reformulează scurt.
+   Pentru text uman natural recomand integrarea API GPT (ex. OpenAI) - vezi comentariu mai jos.
+*/
+function rewriteDescriptionSimple(original){
+  // split în propoziții
+  const sents = original.split(/(?<=[.?!])\s+/).filter(Boolean);
+  // timid paraphrase: schimbă ordinea și înlocuiește cu sinonime simple
+  const synonyms = {
+    'aproape': 'la doi paşi',
+    'lângă': 'în vecinătate cu',
+    'spațios': 'generos',
+    'renovat': 'reabilitat',
+    'ideal pentru investiție': 'excelent pentru investiție'
+  };
+  const mapWord = w => synonyms[w] || w;
+  const paraphrased = sents.map((st, i) => {
+    // simplu: înlocuiri
+    let t = st;
+    Object.keys(synonyms).forEach(k => {
+      const re = new RegExp('\\b' + k + '[file://\\b','gi]\\b','gi');
+      t = t.replace(re, synonyms[k]);
+    });
+    // uneori combinăm două propoziții în una pentru fluență
+    if(i % 2 === 1) return t.toLowerCase();
+    return t;
+  }).join(' ');
+  // adaugă o frază finală care pare umană
+  return paraphrased + ' Recomandat celor care caută randament și stabilitate.';
+}
+
+/* --- Render card */
+function renderCard(listing){
+  const score = computeScore(listing);
+  const desc = rewriteDescriptionSimple(listing.description);
+  return `
+    <article class="card">
+      <h3>${listing.title}</h3>
+      <div class="meta">
+        <div>${listing.city} • ${listing.area || '—'}</div>
+        <div class="price">${listing.price.toLocaleString()} €</div>
+        <div class="score">${score}</div>
+      </div>
+      <div class="meta">
+        <div>${listing.pricePerSqm} €/mp</div>
+        <div>${listing.size} mp</div>
+      </div>
+      <p class="desc">${desc}</p>
+      <div class="badges">
+        ${listing.tags.map(t=>`<span class="badge">${t.replace('_',' ')}</span>`).join('')}
+      </div>
+    </article>
+  `;
+}
+
+/* --- Load sample data (demo) */
+async function loadSample(){
+  const resp = await fetch('listings-sample.json');
+  const data = await resp.json();
+  allListings = data;
+  populateCityFilter();
+  showListings(allListings);
+}
+
+function populateCityFilter(){
+  const cities = Array.from(new Set(allListings.map(l=>l.city))).sort();
+  cityFilter.innerHTML = '<option value="all">Toate</option>' + cities.map(c=>`<option value="${c}">${c}</option>`).join('');
+}
+
+function showListings(list){
+  listingsEl.innerHTML = list.map(renderCard).join('');
+}
+
+/* --- Events */
+applyBtn.addEventListener('click', ()=>{
+  let res = allListings.slice();
+  const city = cityFilter.value;
+  if(city !== 'all') res = res.filter(r=>r.city === city);
+  const mx = parseFloat(maxPrice.value);
+  if(!isNaN(mx)) res = res.filter(r=>r.pricePerSqm <= mx);
+  const it = invType.value;
+  if(it !== 'all') res = res.filter(r=>r.type === it || r.tags.includes(it));
+  // sort by score desc
+  res.sort((a,b)=> computeScore(b) - computeScore(a));
+  showListings(res);
+});
+
+resetBtn.addEventListener('click', ()=>{
+  cityFilter.value = 'all';
+  maxPrice.value = '';
+  invType.value = 'all';
+  showListings(allListings);
+});
+
+addSample.addEventListener('click', (e)=>{
+  e.preventDefault();
+  loadSample();
+});
+
+// initial load if available
+window.addEventListener('DOMContentLoaded', ()=>{
+  // try load sample automatically (if hosted)
+  fetch('listings-sample.json').then(r=>{
+    if(r.ok){ loadSample(); }
+  }).catch(()=>{ /* ignore */});
+});
+
+/* --- Ex: integrare GPT pentru rescriere (pseudocod)
+   Pentru texte umane, cea mai bună variantă e să trimiți originalul la un model (ex. GPT)
+   pe server (nu din client JS) și să salvezi versiunea rescrisă în feed.
+   Exemplu (server-side):
+     - POST /rewrite { text: original }
+     - server: apelează OpenAI completions cu prompt: "Rescrie acest text păstrând ideea, ton neutru, 2-3 propoziții, sună natural."
+*/
